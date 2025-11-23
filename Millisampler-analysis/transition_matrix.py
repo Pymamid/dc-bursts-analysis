@@ -1,7 +1,12 @@
 import pandas as pd
 import numpy as np
+import os
 
-burst_data = pd.read_csv('burst_data.csv')
+cur_dir = os.path.dirname(os.path.abspath(__file__))
+
+burst_data_path = os.path.join(cur_dir, 'burst_data.csv')
+
+burst_data = pd.read_csv(burst_data_path)
 
 burst_data['Starttime'] = burst_data['StartTimestamp'].round()
 
@@ -39,7 +44,18 @@ p_1_0 = count_01/count_0
 p_0_1 = count_10/count_1
 p_1_1 = count_11/count_1
 
+print("printing transition probabilities:")
 print(p_0_0)
 print(p_1_0)
 print(p_0_1)
 print(p_1_1)
+
+print("Printing counts:")
+print(count_00)
+print(count_01)
+print(count_10)
+print(count_11)
+
+print("Printing total counts:")
+print(count_0)
+print(count_1)
