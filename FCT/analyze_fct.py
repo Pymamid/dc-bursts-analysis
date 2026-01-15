@@ -34,9 +34,11 @@ def parse_sender_logs(logs_dir, ip_to_node, node_to_ip):
     """
     flows = []
     
-    # 1. Parse Canonical Background Sender Logs
-    canonical_files = glob.glob(os.path.join(logs_dir, "canonical_bg_sender_*.log"))
-    for filepath in canonical_files:
+    # 1. Parse Background Sender Logs (Canonical and Dynamic)
+    bg_files = glob.glob(os.path.join(logs_dir, "canonical_bg_sender_*.log"))
+    bg_files.extend(glob.glob(os.path.join(logs_dir, "dynamic_bg_sender_*.log")))
+    
+    for filepath in bg_files:
         with open(filepath, 'r') as f:
             for line in f:
                 if line.startswith('#'): continue
