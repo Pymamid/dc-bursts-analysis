@@ -4,11 +4,12 @@
 # cd /home/pragna/work/chris_ns3 && python3 cdf_analysis_dumbbell.py --canonical_dir ns-3-dev-git/scratch/traces/canonical-dumbbell --bg_incast_dir ns-3-dev-git/scratch/traces/bg-incast-dumbbell --burst_aware_dir ns-3-dev-git/scratch/traces/burst-aware-dumbbell --output_file updated_dumbbell_cdfs.png
 
 #easy to read format:
-# cd /home/pragna/work/chris_ns3 && python3 cdf_analysis_dumbbell.py 
-# --canonical_dir ns-3-dev-git/scratch/traces/canonical-15s 
-# --bg_incast_dir ns-3-dev-git/scratch/traces/bg-incast-15s 
-# --burst_aware_dir ns-3-dev-git/scratch/traces/test-dynamic 
+#  python3 cdf_analysis_dumbbell.py 
+# --canonical_dir /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/canonical-15s 
+# --bg_incast_dir /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/bg-incast-15s 
+# --burst_aware_dir /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/test-dynamic 
 # --output_file updated_dumbbell_cdfs.png
+
 """
 CDF Analysis Script for NS-3 Dumbbell Simulations
 
