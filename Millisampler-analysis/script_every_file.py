@@ -27,9 +27,10 @@ for file in files:
         print(f'Skipping file (no Position): {file_path}')
         num_bad_files += 1
         continue
-
-    df = pd.DataFrame(burst_records)[["Position", "Length"]]
-    df.dropna(inplace=True)
+    
+    # save all columns to dataframe
+    df = pd.DataFrame(burst_records)
+    #df.dropna(inplace=True)
 
     # add a new column with the start timestamp in all rows. convert microseconds to milliseconds
     df['StartTimestamp'] = int(start_timestamp)/1000

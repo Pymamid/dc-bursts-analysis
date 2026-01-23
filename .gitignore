@@ -1,0 +1,4 @@
+# Ignore large CSV data directories
+Millisampler-analysis/individual_csvs/
+Millisampler-analysis/individual_csvs_only_position_and_length/
+Millisampler-analysis/ingress_bytes/

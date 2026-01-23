@@ -1,3 +1,4 @@
-,Position,Length,StartTimestamp
-0,46.0,1.0,1641905888027.787
-1,567.0,1.0,1641905888027.787
+,ingressRetxAfterBurst,ingressMax,ingressHeightP95,ecnVol,ecnAfterBurst,avgConnections,Position,Length,FirstRetxPosition,maxConnections,maxConnAfterBurst,ingressVol,ingressRetxVol,ingressAfterBurst,ecnP99,ecnP90,LastRetxPosition,sessionIngressVol,sessionIngressRetxVol,sessionECNVol,sessionAvgConnections,Ingress P99.900000,Ingress P99.000000,Ingress P90.000000,Egress P99.900000,Egress P99.000000,Egress P90.000000,ECN P99.900000,ECN P99.000000,ECN P90.000000,Burst Threshold,StartTimestamp
+0,0.0,1116561.0,1116561.0,169434.0,0.0,32.0,46.0,1.0,-1.0,32.0,8.0,1116561.0,0.0,423509.0,169434.0,169434.0,-1.0,,,,,,,,,,,,,,,1641905888027.787
+1,0.0,1027612.0,1027612.0,0.0,0.0,14.0,567.0,1.0,-1.0,14.0,9.0,1027612.0,0.0,418289.0,0.0,0.0,-1.0,,,,,,,,,,,,,,,1641905888027.787
+2,,,,,,,,,,,,,,,,,,283905486.0,0.0,279824.0,25.64271151885831,713179.5270000702,508046.0399999996,288879.3,1562500.0,1562500.0,850779.8,16978.100000017796,0.0,0.0,0.5,1641905888027.787
