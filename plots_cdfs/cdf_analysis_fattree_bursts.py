@@ -16,7 +16,7 @@ LINK_SPEED_GBPS = 25.0
 TIME_GRANULARITY_MS = 1.0
 UTILIZATION_THRESHOLD_PCT = 0.50
 FLOW_GAP_THRESHOLD_S = 0.002  # 2ms gap defines a new sub-flow (for flow size CDF)
-BURST_MERGE_THRESHOLD_S = 0.020 # 20ms gap to merge bursts (debouncing)
+BURST_MERGE_THRESHOLD_S = 0 # 0ms gap to merge bursts (debouncing)
 
 # Capacity per ms in bytes: (25 * 10^9 bits/s) * (0.001 s) / 8 bits/byte
 BYTES_PER_MS_CAPACITY = (LINK_SPEED_GBPS * 1e9 * (TIME_GRANULARITY_MS / 1000.0)) / 8.0
@@ -74,6 +74,7 @@ def parse_aggregator_logs(trace_dir, ip_map):
         burst_flow_sizes: List of sizes for burst flows
         bg_flow_sizes: List of sizes for background flows
         bursts: List of burst dictionaries
+        time_bins: Dictionary of time_ms -> {'bytes': count, 'flows': set()}
     """
     aggregator_log = os.path.join(trace_dir, "logs", "aggregator_bytes_received.log")
     if not os.path.exists(aggregator_log):
@@ -154,7 +155,8 @@ def parse_aggregator_logs(trace_dir, ip_map):
     current_burst_start_bin = None
     current_burst_end_bin = None
     current_burst_flows = set()
-    current_burst_bytes = 0
+    current_burst_max_bytes = 0
+    current_burst_max_connections = 0
     
     # We need to iterate through time continuously to detect gaps (non-bursty windows)
     # But since we only stored bins with data, we can iterate sorted_bins and check gaps.
@@ -164,7 +166,7 @@ def parse_aggregator_logs(trace_dir, ip_map):
     # Optimization: Iterate sorted keys, but handle gaps logic
     
     # Helper to close a burst
-    def close_burst(start_bin, end_bin, flows, total_bytes):
+    def close_burst(start_bin, end_bin, flows, max_bytes, max_connections):
         # Duration in seconds: (end_bin - start_bin + 1) * 1ms
         duration = (end_bin - start_bin + 1) * (TIME_GRANULARITY_MS / 1000.0)
         bursts.append({
@@ -172,12 +174,13 @@ def parse_aggregator_logs(trace_dir, ip_map):
             'end_time': (end_bin + 1) * (TIME_GRANULARITY_MS / 1000.0),
             'duration': duration,
             'num_flows': len(flows),
-            'total_bytes': total_bytes
+            'max_bytes': max_bytes,
+            'max_connections': max_connections
         })
 
     for bin_idx in sorted_bins:
         bin_data = time_bins[bin_idx]
-        is_bursty = bin_data['bytes'] > BYTES_THRESHOLD
+        is_bursty = bin_data['bytes'] >= BYTES_THRESHOLD
         
         if is_bursty:
             if current_burst_start_bin is None:
@@ -185,42 +188,37 @@ def parse_aggregator_logs(trace_dir, ip_map):
                 current_burst_start_bin = bin_idx
                 current_burst_end_bin = bin_idx
                 current_burst_flows = bin_data['flows'].copy()
-                current_burst_bytes = bin_data['bytes']
+                current_burst_max_bytes = bin_data['bytes']
+                current_burst_max_connections = len(bin_data['flows'])
             else:
-                # Check gap
-                gap_bins = bin_idx - current_burst_end_bin - 1
-                gap_time_s = gap_bins * (TIME_GRANULARITY_MS / 1000.0)
-                
-                if gap_time_s < BURST_MERGE_THRESHOLD_S:
-                    # Merge: Include gap bins and current bin
-                    for gap_bin in range(current_burst_end_bin + 1, bin_idx):
-                        gap_data = time_bins[gap_bin]
-                        current_burst_flows.update(gap_data['flows'])
-                        current_burst_bytes += gap_data['bytes']
-                    
+                # Check if this bin is consecutive to previous burst end
+                if bin_idx == current_burst_end_bin + 1:
+                    # Consecutive bursty bin: extend current burst
                     current_burst_end_bin = bin_idx
                     current_burst_flows.update(bin_data['flows'])
-                    current_burst_bytes += bin_data['bytes']
+                    current_burst_max_bytes = max(current_burst_max_bytes, bin_data['bytes'])
+                    current_burst_max_connections = max(current_burst_max_connections, len(bin_data['flows']))
                 else:
-                    # Gap too large, close previous burst
-                    close_burst(current_burst_start_bin, current_burst_end_bin, current_burst_flows, current_burst_bytes)
+                    # Gap detected: close previous burst and start new one
+                    close_burst(current_burst_start_bin, current_burst_end_bin, current_burst_flows, current_burst_max_bytes, current_burst_max_connections)
                     
                     # Start new burst
                     current_burst_start_bin = bin_idx
                     current_burst_end_bin = bin_idx
                     current_burst_flows = bin_data['flows'].copy()
-                    current_burst_bytes = bin_data['bytes']
+                    current_burst_max_bytes = bin_data['bytes']
+                    current_burst_max_connections = len(bin_data['flows'])
         else:
-            # Current bin is not bursty.
-            # We do NOT close immediately. We wait to see if a bursty bin appears within threshold.
-            # If we reach the end of sorted_bins, we will close.
-            pass
+            # Non-bursty bin: close current burst if open
+            if current_burst_start_bin is not None:
+                close_burst(current_burst_start_bin, current_burst_end_bin, current_burst_flows, current_burst_max_bytes, current_burst_max_connections)
+                current_burst_start_bin = None
 
     # Close final burst if open
     if current_burst_start_bin is not None:
-        close_burst(current_burst_start_bin, current_burst_end_bin, current_burst_flows, current_burst_bytes)
+        close_burst(current_burst_start_bin, current_burst_end_bin, current_burst_flows, current_burst_max_bytes, current_burst_max_connections)
 
-    return burst_subflows, bg_subflows, bursts
+    return burst_subflows, bg_subflows, bursts, time_bins
 
 def parse_sender_logs(trace_dir, pattern):
     """
@@ -274,7 +272,7 @@ def plot_cdfs(canonical_dir, bg_incast_dir, burst_aware_dir, output_file, title)
         ip_map = parse_node_map(canonical_dir)
         
         # Parse Aggregator Logs for EVERYTHING (Bursts + Background)
-        burst_flow_sizes, bg_flow_sizes, bursts = parse_aggregator_logs(canonical_dir, ip_map)
+        burst_flow_sizes, bg_flow_sizes, bursts, time_bins = parse_aggregator_logs(canonical_dir, ip_map)
         
         if bursts:
             concurrent_flows['canonical'] = [b['num_flows'] for b in bursts]
@@ -301,7 +299,7 @@ def plot_cdfs(canonical_dir, bg_incast_dir, burst_aware_dir, output_file, title)
         ip_map = parse_node_map(bg_incast_dir)
         
         # Parse Aggregator Logs for EVERYTHING (Bursts + Background)
-        burst_flow_sizes, bg_flow_sizes, bursts = parse_aggregator_logs(bg_incast_dir, ip_map)
+        burst_flow_sizes, bg_flow_sizes, bursts, time_bins = parse_aggregator_logs(bg_incast_dir, ip_map)
         
         if bursts:
             concurrent_flows['bg-incast'] = [b['num_flows'] for b in bursts]
@@ -329,7 +327,7 @@ def plot_cdfs(canonical_dir, bg_incast_dir, burst_aware_dir, output_file, title)
         ip_map = parse_node_map(burst_aware_dir)
         
         # Parse Aggregator Logs for EVERYTHING (Bursts + Background)
-        burst_flow_sizes, bg_flow_sizes, bursts = parse_aggregator_logs(burst_aware_dir, ip_map)
+        burst_flow_sizes, bg_flow_sizes, bursts, time_bins = parse_aggregator_logs(burst_aware_dir, ip_map)
         
         if bursts:
             concurrent_flows['burst-aware'] = [b['num_flows'] for b in bursts]
