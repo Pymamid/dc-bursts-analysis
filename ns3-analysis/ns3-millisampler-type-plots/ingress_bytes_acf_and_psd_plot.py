@@ -6,7 +6,7 @@ from scipy import signal
 import argparse
 import os
 
-#python3 ingress_bytes_acf_plot.py ../ns3-millisampler-type-output/k=8DCTCPburstawareingress.txt --output ingress_acf_ns3.png --title "Ingress Bytes ACF (DCTCP k=8 Burst-Aware)" --max-lag 500
+#python3 ingress_bytes_acf_and_psd_plot.py ../ns3-millisampler-type-output/k=8DCTCPburstawareingress.txt --output ingress_acf_ns3.png --title "Ingress Bytes ACF (DCTCP k=8 Burst-Aware)" --max-lag 500
 
 def load_ingress_time_series(file_path):
     """Load ingress bytes time series from NS3 output file."""
