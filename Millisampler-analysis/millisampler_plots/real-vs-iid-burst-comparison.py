@@ -113,8 +113,8 @@ def plot_cdf_comparison(real_values, synthetic_values, xlabel, title, output_fil
     
     # Add statistics
     if len(real_values) > 0 and len(synthetic_values) > 0:
-        stats_text = (f'Real: n={len(real_values)}, mean={np.mean(real_values):.1f}\n'
-                      f'I.I.D.: n={len(synthetic_values)}, mean={np.mean(synthetic_values):.1f}')
+        stats_text = (f'Real: n={len(real_values)} bursts, mean={np.mean(real_values):.1f}\n'
+                      f'I.I.D.: n={len(synthetic_values)} bursts, mean={np.mean(synthetic_values):.1f}')
         ax.text(0.95, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
                 verticalalignment='top', horizontalalignment='right',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -222,6 +222,10 @@ def main():
     ax1.set_ylim(0, 1.05)
     ax1.legend()
     ax1.grid(True, alpha=0.3)
+    # Add burst count annotation
+    ax1.text(0.95, 0.05, f'Real: {len(real_lengths)} bursts\nI.I.D.: {len(all_synthetic_lengths)} bursts ({n_replays} runs)',
+             transform=ax1.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     # Height CDF
     ax2 = axes[1]
@@ -237,6 +241,10 @@ def main():
     ax2.set_ylim(0, 1.05)
     ax2.legend()
     ax2.grid(True, alpha=0.3)
+    # Add burst count annotation
+    ax2.text(0.95, 0.05, f'Real: {len(real_heights)} bursts\nI.I.D.: {len(all_synthetic_heights)} bursts ({n_replays} runs)',
+             transform=ax2.transAxes, fontsize=9, verticalalignment='bottom', horizontalalignment='right',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     plt.suptitle('Real vs I.I.D. Replay: Burst Characteristics', fontsize=14, y=1.02)
     plt.tight_layout()
