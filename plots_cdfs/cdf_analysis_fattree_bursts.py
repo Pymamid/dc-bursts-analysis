@@ -6,8 +6,10 @@ import os
 import glob
 from collections import defaultdict
 
+# python3 cdf_analysis_fattree_bursts.py --canonical /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/canonical-fattree --bg_incast /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/bg-incast-fattree --burst_aware /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/burst-aware-fattree --output /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/attree_cdfs_DCTCP_k=8.png --title "Burst detection at Receiver similar to millisampler logic - k=8 and DCTCP and real world parameters"
 
 # python3 /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/cdf_analysis_fattree_bursts.py --canonical /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/canonical-fattree --bg_incast /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/bg-incast-fattree --burst_aware /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/burst-aware-fattree --output /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/fattree_cdfs_receiver.png --title "Burst detection at Receiver similar to millisampler logic - k=4 and DCTCP and real world parameters"
+
 # Constants for burst stitching
 # BURST_GAP_THRESHOLD = 0.000001  # 1ns gap defines a new burst (OLD LOGIC)
 

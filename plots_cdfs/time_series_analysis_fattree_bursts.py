@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import glob
 from collections import defaultdict
-
+# python3 time_series_analysis_fattree_bursts.py --canonical /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/canonical-fattree --bg_incast /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/bg-incast-fattree --burst_aware /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/burst-aware-fattree --output /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/time_series_burst_check.png --title "Time Series Burst Data Check"
 # python3 /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/time_series_analysis_fattree_bursts.py --canonical /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/canonical-fattree --bg_incast /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/bg-incast-fattree --burst_aware /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/burst-aware-fattree --output /home/pragna/work/DC_bursts/Analysis-scripts/plots_cdfs/fattree_time_series_receiver.png --title "Fattree Burst Time Series Analysis"
 # Constants
 LINK_SPEED_GBPS = 25.0
