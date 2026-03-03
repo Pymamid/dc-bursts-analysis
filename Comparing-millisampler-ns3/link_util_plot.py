@@ -4,8 +4,7 @@
 
 # input aggregated csv is in ms intervals, with columns Time(s),BytesReceived
 
-# python3 link_util_plot.py dctcpk=8ingress_aggregated.csv dctcpk=8linkutil.png 0 10
-
+# python3 link_util_plot.py dctcpk=4newingress_aggregated.csv dctcpk=4newlinkutil_parital.png 0 1
 
 import sys
 import os

@@ -1,0 +1,13 @@
+./ns3 run "scratch/burst-aware-simulation-latest –k=4 --backgroundFlowSizeDistribution=FB_Hadoop --backgroundFlowArrivalRate=50 --queryRate=1000 --minIncastScale=10 --maxIncastScale=15 --burstFlowSizeBytes=40960 --maxConcurrentFlowsPerSender=100 --simulationTime=10 --queueSizePackets=1200000  --queueMinThresholdPackets=80 --queueMaxThresholdPackets=80 --hostBandwidth=25000 --edgeOversubscription=0.125"
+
+
+same as other folder, except max concurrent background flows is different (dont know if that makes any difference) - 
+I just wanted the results again to verify 
+a. why tablebottoms were there. (they are also in this plot.)
+b. how many bursts ? - are we approaching 1000 QPS now that bg load is lesser..
+
+Answer to b - yes, now there are 6162 bursts in total. when bg load was 500, there were 1250 bursts in total in 10 secs.
+So not yet at 1000QPS, but approaching that! Will check with bg load as 5 per sender per sec next.
+
+Answer to a - the tablebottoms are due to big background flows (around 10MB) - they are rare but exist.
+

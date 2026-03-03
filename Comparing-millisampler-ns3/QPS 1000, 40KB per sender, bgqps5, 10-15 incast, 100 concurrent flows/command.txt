@@ -1,0 +1,11 @@
+./ns3 run "scratch/burst-aware-simulation-latest --k=4 --backgroundFlowSizeDistribution=FB_Hadoop --backgroundFlowArrivalRate=5 --queryRate=1000 --minIncastScale=10 --maxIncastScale=15 --burstFlowSizeBytes=40960 --maxConcurrentFlowsPerSender=100 --simulationTime=10 --queueSizePackets=1200000  --queueMinThresholdPackets=80 --queueMaxThresholdPackets=80 --hostBandwidth=25000 --edgeOversubscription=0.125"
+
+
+All parameters same, except bgqps. kept it as 5 to see if incast bursts will reach 1000 QPS, and their duration will be in microseconds. earlier BCTs were high due to bg flows being interleaved.
+
+BCTs in 500bgrate was 1-4ms
+BCTs in 50bgrate was 250us
+BCTs in 5bgrate is again 250us.
+
+Now there are 6918 bursts in total. (little more than 6100 in 50bgrate simulation.)
+

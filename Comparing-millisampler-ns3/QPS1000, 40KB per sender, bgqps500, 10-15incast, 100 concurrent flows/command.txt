@@ -1,0 +1,5 @@
+./ns3 run "scratch/burst-aware-simulation-latest –-k=4 --backgroundFlowSizeDistribution=FB_Hadoop --backgroundFlowArrivalRate=500 --queryRate=1000 --minIncastScale=10 --maxIncastScale=15 --burstFlowSizeBytes=40960 --maxConcurrentFlowsPerSender=100 --simulationTime=10 --queueSizePackets=1200000  --queueMinThresholdPackets=80 --queueMaxThresholdPackets=80 --hostBandwidth=25000 --edgeOversubscription=0.125"
+
+
+high background load (500 flows per sec per sender, 100 max concurrent flows) and 40KB incast size per sender.
+the query rate of 1000 was not achieved because bursts were taking a long time to complete due to background flow load being high.

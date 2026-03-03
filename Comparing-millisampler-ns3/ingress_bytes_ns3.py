@@ -5,7 +5,7 @@
 
 # take file (with path) as input, and output a plot.
 
-# python3 ingress_bytes_ns3.py /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/SavedTraces/k=8DCTCPafter-parameter-alignment/bg-incast-fattree/logs/aggregator_bytes_received.log dctcpk=8ingress.png
+# python3 ingress_bytes_ns3.py /home/pragna/work/chris_ns3/ns-3-dev-git/scratch/traces/burst-aware-simulation-latest/logs/aggregator_bytes_received.log dctcpk=4newingress.png
 
 import matplotlib.pyplot as plt
 import numpy as np
