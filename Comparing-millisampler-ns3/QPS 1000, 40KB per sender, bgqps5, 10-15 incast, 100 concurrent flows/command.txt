@@ -9,3 +9,13 @@ BCTs in 5bgrate is again 250us.
 
 Now there are 6918 bursts in total. (little more than 6100 in 50bgrate simulation.)
 
+250us gives 4 bursts in 1ms => 4000 bursts possible in a second. so where's the time going??
+
+even if you do 1 burst per ms, 1000 bursts per second is doable.
+probably worthwhile doing CDFs of BCTs.
+
+okay, the BCT and IAT CDFs give some answers. IAT is more than expected, and more than BCT actually!
+
+why is IAT being stretched? BCT stretching is expected if traffic is interleaved with background flows. but why IAT?? dont know - I plotted timeseries - but no idea why.
+
+

@@ -6,6 +6,8 @@ Output: Time series plot with x-axis from 0-2 seconds
 Bandwidth: 6.25 Gbps
 """
 
+# python3 link_util_millisampler.py ../Millisampler-analysis/good.csv -o ingress_millisampler.png 0 0.5
+
 import json
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,14 +20,15 @@ def load_data(filename):
         data = json.load(f)
     return data
 
-def plot_ingress_timeseries(data, output_filename=None, max_time_seconds=2):
+def plot_ingress_timeseries(data, output_filename=None, start_time_seconds=0, end_time_seconds=2):
     """
     Plot ingress bytes timeseries.
     
     Args:
         data: Dictionary containing the measurement data
         output_filename: Output file name for the plot (optional)
-        max_time_seconds: Maximum time to plot (default: 2 seconds)
+        start_time_seconds: Start time in seconds (default: 0)
+        end_time_seconds: End time in seconds (default: 2)
     """
     
     # Extract ingress bytes (1 sample per millisecond)
@@ -45,72 +48,55 @@ def plot_ingress_timeseries(data, output_filename=None, max_time_seconds=2):
     # Time interval between samples (1ms)
     dt = 0.001  # seconds per sample
     
-    # Calculate number of samples for the requested time window
-    max_samples = int(max_time_seconds / dt)
+    # Calculate sample indices for the requested time window
+    start_sample = int(start_time_seconds / dt)
+    end_sample = int(end_time_seconds / dt)
     
-    # Limit data to the requested time window
-    if len(ingress_bytes) > max_samples:
-        ingress_bytes = ingress_bytes[:max_samples]
+    # Limit to available data
+    start_sample = max(0, min(start_sample, len(ingress_bytes) - 1))
+    end_sample = min(end_sample, len(ingress_bytes))
     
-    # Create time axis
-    time_axis = np.arange(len(ingress_bytes)) * dt
+    # Extract data for the time window
+    windowed_ingress_bytes = ingress_bytes[start_sample:end_sample]
+    
+    # Create time axis starting from start_time_seconds
+    time_axis = np.arange(len(windowed_ingress_bytes)) * dt + start_time_seconds
     
     # Convert bytes to bits per second (throughput)
     # Since each sample represents bytes in a 1ms window,
     # we multiply by 1000 to get bytes/second, then by 8 for bits/second
-    throughput_bps = np.array(ingress_bytes) * 1000 * 8  # bits per second
+    throughput_bps = np.array(windowed_ingress_bytes) * 1000 * 8  # bits per second
     
     # Convert to Gbps for easier reading
     throughput_gbps = throughput_bps / 1e9
     
     # Create the plot
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 6))
     
-    # Plot raw ingress bytes
-    plt.subplot(2, 1, 1)
-    plt.plot(time_axis, ingress_bytes, linewidth=0.8, alpha=0.8)
-    
-    # Mark burst regions on ingress bytes plot
-    for i, burst in enumerate(bursts):
-        start_time = burst['position'] * dt
-        end_time = (burst['position'] + burst['length']) * dt
-        
-        # Only show bursts within the time window
-        if start_time < max_time_seconds:
-            end_time = min(end_time, max_time_seconds)
-            plt.axvspan(start_time, end_time, alpha=0.05, color='red', 
-                       label='Burst Region' if i == 0 else "")
-    
-    plt.xlabel('Time (seconds)')
-    plt.ylabel('Ingress Bytes per Sample')
-    plt.title('Ingress Bytes over Time')
-    plt.grid(True, alpha=0.3)
-    plt.xlim(0, max_time_seconds)
-    if bursts:  # Add legend only if there are bursts
-        plt.legend()
-    
-    # Plot throughput in Gbps
-    plt.subplot(2, 1, 2)
+    # Plot throughput in Gbps (Link Utilization)
     plt.plot(time_axis, throughput_gbps, linewidth=0.8, alpha=0.8, color='orange')
     plt.axhline(y=6.25, color='red', linestyle='--', linewidth=2, 
                 label='Bandwidth Limit (6.25 Gbps)')
     
-    # Mark burst regions on throughput plot
+    # Mark burst regions
     for i, burst in enumerate(bursts):
-        start_time = burst['position'] * dt
-        end_time = (burst['position'] + burst['length']) * dt
+        burst_start_time = burst['position'] * dt
+        burst_end_time = (burst['position'] + burst['length']) * dt
         
         # Only show bursts within the time window
-        if start_time < max_time_seconds:
-            end_time = min(end_time, max_time_seconds)
-            plt.axvspan(start_time, end_time, alpha=0.05, color='red', 
+        if burst_end_time > start_time_seconds and burst_start_time < end_time_seconds:
+            # Clip burst times to the visible window
+            display_start = max(burst_start_time, start_time_seconds)
+            display_end = min(burst_end_time, end_time_seconds)
+            plt.axvspan(display_start, display_end, alpha=0.05, color='red', 
                        label='Burst Region' if i == 0 else "")
+    
     plt.xlabel('Time (seconds)')
-    plt.ylabel('Throughput (Gbps)')
-    plt.title('Ingress Throughput over Time')
+    plt.ylabel('Link Utilization (Gbps)')
+    plt.title(f'Link Utilization over Time ({start_time_seconds:.3f}s - {end_time_seconds:.3f}s)')
     plt.grid(True, alpha=0.3)
     plt.legend()
-    plt.xlim(0, max_time_seconds)
+    plt.xlim(start_time_seconds, end_time_seconds)
     
     # Add overall statistics
     mean_throughput = np.mean(throughput_gbps)
@@ -123,12 +109,12 @@ def plot_ingress_timeseries(data, output_filename=None, max_time_seconds=2):
                 f'Peak Throughput: {max_throughput:.2f} Gbps\n'
                 f'Average Utilization: {utilization:.1f}%\n'
                 f'Sampling Rate: 1000 Hz (1ms per sample)\n'
-                f'Duration: {len(ingress_bytes) * dt:.3f} sec\n'
+                f'Window: {start_time_seconds:.3f}s - {end_time_seconds:.3f}s ({len(windowed_ingress_bytes)} samples)\n'
                 f'Bursts Detected: {len(bursts)}',
                 fontsize=9, family='monospace')
     
     plt.tight_layout()
-    plt.subplots_adjust(bottom=0.15)
+    plt.subplots_adjust(bottom=0.12)
     
     # Save or show the plot
     if output_filename:
@@ -140,11 +126,20 @@ def plot_ingress_timeseries(data, output_filename=None, max_time_seconds=2):
 def main():
     parser = argparse.ArgumentParser(description='Plot ingress bytes timeseries from millisampler data')
     parser.add_argument('input_file', help='Input JSON file (e.g., good.csv)')
+    parser.add_argument('start_time', type=float, help='Start time in seconds')
+    parser.add_argument('end_time', type=float, help='End time in seconds')
     parser.add_argument('-o', '--output', help='Output plot filename (optional)')
-    parser.add_argument('-t', '--time', type=float, default=2.0,
-                       help='Maximum time to plot in seconds (default: 2.0)')
     
     args = parser.parse_args()
+    
+    # Validate time arguments
+    if args.start_time >= args.end_time:
+        print("Error: Start time must be less than end time.")
+        sys.exit(1)
+    
+    if args.start_time < 0:
+        print("Error: Start time must be non-negative.")
+        sys.exit(1)
     
     try:
         # Load the data
@@ -152,7 +147,7 @@ def main():
         data = load_data(args.input_file)
         
         # Plot the timeseries
-        plot_ingress_timeseries(data, args.output, args.time)
+        plot_ingress_timeseries(data, args.output, args.start_time, args.end_time)
         
     except FileNotFoundError:
         print(f"Error: File '{args.input_file}' not found.")

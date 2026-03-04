@@ -1,0 +1,4 @@
+./ns3 run "scratch/burst-aware-simulation-latest –k=4 --backgroundFlowSizeDistribution=FB_Hadoop --backgroundFlowArrivalRate=50 --queryRate=1000 --minIncastScale=10 --maxIncastScale=15 --burstFlowSizeBytes=40960 --maxConcurrentFlowsPerSender=100 --simulationTime=10 --queueSizePackets=1200000  --queueMinThresholdPackets=80 --queueMaxThresholdPackets=80 --hostBandwidth=25000 --edgeOversubscription=0.125"
+
+In all of these, effective QPS is not 1000 - it is less than that, because even with negligible background load (5 per second per sender), the BCT is around 250us, IAT is more than that, and we see the total number of bursts in 10 seconds is < 7000.
+
