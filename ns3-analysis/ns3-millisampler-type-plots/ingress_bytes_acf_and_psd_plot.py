@@ -6,10 +6,10 @@ from scipy import signal
 import argparse
 import os
 
-#python3 ingress_bytes_acf_and_psd_plot.py ../ns3-millisampler-type-output/k=8DCTCPburstawareingress.txt --output ingress_acf_ns3.png --title "Ingress Bytes ACF (DCTCP k=8 Burst-Aware)" --max-lag 500
+#python3 ingress_bytes_acf_and_psd_plot.py ../ns3-millisampler-type-output/k=8DCTCPburstawareingress.txt --output ingress_acf_ns3.png --title "Ingress Bytes ACF (DCTCP k=8 Burst-Aware, 1-3s)" --max-lag 500
 
 def load_ingress_time_series(file_path):
-    """Load ingress bytes time series from NS3 output file."""
+    """Load ingress bytes time series from NS3 output file, filtering for time 1-3s."""
     try:
         ingress_data = []
         with open(file_path, 'r') as f:
@@ -22,7 +22,10 @@ def load_ingress_time_series(file_path):
                     try:
                         timestamp = float(parts[0])  # Time(s)
                         bytes_received = int(parts[1])  # BytesReceived
-                        ingress_data.append(bytes_received)
+                        
+                        # Only include data from 1.0s to 3.0s
+                        if 1.0 <= timestamp <= 3.0:
+                            ingress_data.append(bytes_received)
                     except (ValueError, IndexError):
                         continue
         
@@ -113,13 +116,13 @@ def plot_acf_analysis(time_series, title, output_file, max_lag=500):
     # Compute ACF
     lags, acf = compute_acf(time_series, max_lag)
     
-    # Plot 1: Time series (first 10 seconds)
-    sample_length = min(10000, len(time_series))  # First 10 seconds
-    time_axis = np.arange(sample_length) / 1000.0  # Convert ms to seconds
+    # Plot 1: Time series (all 2 seconds of filtered data)
+    sample_length = len(time_series)  # Show all filtered data (1-3s)
+    time_axis = np.arange(sample_length) / 1000.0 + 1.0  # Start from 1.0s
     ax1.plot(time_axis, time_series[:sample_length], 'b-', alpha=0.7)
     ax1.set_xlabel('Time (s)', fontsize=11)
     ax1.set_ylabel('Ingress Bytes', fontsize=11)
-    ax1.set_title('Time Series (First 10s)', fontsize=12)
+    ax1.set_title('Time Series (1-3s filtered)', fontsize=12)
     ax1.grid(True, alpha=0.3)
     
     # Plot 2: Full ACF
@@ -189,7 +192,7 @@ def plot_acf_analysis(time_series, title, output_file, max_lag=500):
         ax4.set_title('Power Spectral Density', fontsize=12)
     
     # Add overall statistics
-    stats_text = f'Series length: {len(time_series):,} ms\n'
+    stats_text = f'Series length: {len(time_series):,} ms (1-3s)\n'
     stats_text += f'Mean: {np.mean(time_series):.1f}\n'
     stats_text += f'Std: {np.std(time_series):.1f}\n'
     
@@ -236,9 +239,9 @@ def main():
         print("Failed to load data!")
         return
     
-    print(f"Loaded time series with {len(time_series)} time points")
+    print(f"Loaded time series with {len(time_series)} time points (filtered for 1-3s)")
     print(f"Time series statistics:")
-    print(f"  Length: {len(time_series)} ms ({len(time_series)/1000:.1f} seconds)")
+    print(f"  Length: {len(time_series)} ms (2.0 seconds of data)")
     print(f"  Mean: {np.mean(time_series):.1f}")
     print(f"  Std: {np.std(time_series):.1f}")
     print(f"  Non-zero samples: {np.count_nonzero(time_series)} ({100*np.count_nonzero(time_series)/len(time_series):.1f}%)")

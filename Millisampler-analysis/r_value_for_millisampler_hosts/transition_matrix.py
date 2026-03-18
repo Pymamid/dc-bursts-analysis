@@ -1,12 +1,20 @@
 import pandas as pd
 import numpy as np
 import os
+import sys
 
-cur_dir = os.path.dirname(os.path.abspath(__file__))
+if len(sys.argv) != 2:
+    print("Usage: python transition_matrix.py <input_csv_file>")
+    sys.exit(1)
 
-burst_data_path = os.path.join(cur_dir, 'burst_data.csv')
+input_file = sys.argv[1]
 
-burst_data = pd.read_csv(burst_data_path)
+# Check if input file exists
+if not os.path.exists(input_file):
+    print(f"Error: File {input_file} not found.")
+    sys.exit(1)
+
+burst_data = pd.read_csv(input_file)
 
 burst_data['Starttime'] = burst_data['StartTimestamp'].round()
 
