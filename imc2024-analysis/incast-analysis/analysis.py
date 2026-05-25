@@ -121,6 +121,45 @@ def filter_samples(samples, start, end):
     return [sample for sample in samples if start <= sample[0] <= end]
 
 
+def global_burst_idx_to_local(flow_times_by_burst, num_bursts, burst_idx):
+    """Map global burst index to this sender's local flow index, or None."""
+    n = len(flow_times_by_burst)
+    if n == num_bursts:
+        return burst_idx
+    offset = num_bursts - n
+    if burst_idx >= offset:
+        return burst_idx - offset
+    return None
+
+
+def get_flow_time_for_global_burst(flow_times_by_burst, num_bursts, burst_idx):
+    local_idx = global_burst_idx_to_local(flow_times_by_burst, num_bursts, burst_idx)
+    if local_idx is None:
+        return None
+    return flow_times_by_burst[local_idx]
+
+
+def align_sender_flow_times_for_bursts(flow_times_by_burst, num_bursts):
+    """One entry per global burst: flow tuple, or None if sender was inactive."""
+    return [
+        get_flow_time_for_global_burst(flow_times_by_burst, num_bursts, burst_idx)
+        for burst_idx in range(num_bursts)
+    ]
+
+
+def collect_flow_times_for_global_burst(
+    sender_to_flow_times_by_burst, num_bursts, burst_idx
+):
+    times = []
+    for flow_times_by_burst in sender_to_flow_times_by_burst.values():
+        flow_time = get_flow_time_for_global_burst(
+            flow_times_by_burst, num_bursts, burst_idx
+        )
+        if flow_time is not None:
+            times.append(flow_time)
+    return times
+
+
 def separate_samples_into_bursts(
     samples,
     burst_times,
@@ -133,14 +172,24 @@ def separate_samples_into_bursts(
 
     if filter_on_flow_times:
         assert flow_times is not None
+        if len(flow_times) != num_bursts:
+            flow_times = align_sender_flow_times_for_bursts(flow_times, num_bursts)
     else:
         assert flow_times is None
         flow_times = [(None, None, None, None)] * num_bursts
 
-    for burst_idx, (
-        (burst_start, burst_end),
-        (flow_start, _, flow_end, _),
-    ) in enumerate(zip(burst_times, flow_times)):
+    for burst_idx, ((burst_start, burst_end), flow) in enumerate(
+        zip(burst_times, flow_times)
+    ):
+        if filter_on_flow_times and flow is None:
+            bursts.append([])
+            continue
+
+        if filter_on_flow_times:
+            flow_start, _, flow_end, _ = flow
+        else:
+            flow_start, _, flow_end, _ = flow
+
         burst = []
         for sample in samples:
             if burst_start <= sample[0] <= burst_end and (
@@ -544,12 +593,12 @@ def get_sender_to_flow_times_by_burst(exp_dir):
 def get_active_flows_by_burst(sender_to_flow_times_by_burst, num_bursts):
     active_flows_by_burst = []
     for burst_idx in range(num_bursts):
-        times = []
-        for flow_times_by_burst in sender_to_flow_times_by_burst.values():
-            if len(flow_times_by_burst) == num_bursts:
-                times.append(flow_times_by_burst[burst_idx])
-            elif burst_idx >= (num_bursts - len(flow_times_by_burst)):
-                times.append(flow_times_by_burst[burst_idx - (num_bursts - len(flow_times_by_burst))])
+        times = collect_flow_times_for_global_burst(
+            sender_to_flow_times_by_burst, num_bursts, burst_idx
+        )
+        if not times:
+            active_flows_by_burst.append([])
+            continue
         starts, _, ends, _ = zip(*times)
         serialized = [(start, 1) for start in starts] + [(end, -1) for end in ends]
         serialized = sorted(serialized, key=lambda p: p[0])
@@ -598,12 +647,11 @@ def graph_cdf_of_flow_duration(
         fig, axes = get_axes(width=3)
         ax = axes[0]
 
-        times = []
-        for flow_times_by_burst in sender_to_flow_times_by_burst.values():
-            if len(flow_times_by_burst) == num_bursts:
-                times.append(flow_times_by_burst[burst_idx])
-            elif burst_idx >= (num_bursts - len(flow_times_by_burst)):
-                times.append(flow_times_by_burst[burst_idx - (num_bursts - len(flow_times_by_burst))])
+        times = collect_flow_times_for_global_burst(
+            sender_to_flow_times_by_burst, num_bursts, burst_idx
+        )
+        if not times:
+            continue
         durations = [(end - start) * 1e3 for start, _, end, _ in times]
         print(f"min: {min(durations)}, max: {max(durations)}")
 
@@ -661,8 +709,11 @@ def get_sender_to_cwnds_by_burst(
             # Read all CWND samples for this sender
             parse_cwnds(flp),
             burst_times,
-            # Look up the start and end time for this sender
-            sender_to_flow_times_by_burst[parse_sender(flp)],
+            # Align per-sender flows to global burst indices (split incast)
+            align_sender_flow_times_for_bursts(
+                sender_to_flow_times_by_burst[parse_sender(flp)],
+                len(burst_times),
+            ),
             filter_on_flow_times=True,
             bookend=True,
         )
@@ -1487,7 +1538,10 @@ def get_sender_to_congest_by_burst(exp_dir, burst_times, sender_to_flow_times_by
             parse_congest(flp),
             burst_times,
             # Look up the start and end time for this sender
-            sender_to_flow_times_by_burst[parse_sender(flp)],
+            align_sender_flow_times_for_bursts(
+                sender_to_flow_times_by_burst[parse_sender(flp)],
+                len(burst_times),
+            ),
             filter_on_flow_times=True,
             bookend=True,
         )
@@ -1559,7 +1613,10 @@ def get_sender_to_rtts_by_burst(exp_dir, burst_times, sender_to_flow_times_by_bu
             parse_rtts(flp),
             burst_times,
             # Look up the start and end time for this sender
-            sender_to_flow_times_by_burst[parse_sender(flp)],
+            align_sender_flow_times_for_bursts(
+                sender_to_flow_times_by_burst[parse_sender(flp)],
+                len(burst_times),
+            ),
             filter_on_flow_times=True,
             bookend=True,
         )
