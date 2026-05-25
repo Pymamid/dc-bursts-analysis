@@ -1,64 +1,52 @@
 """
-DCTCP Regime Simulation  v3
+DCTCP Regime Simulation  v4
 ============================
-Interactive simulation of DCTCP queue/cwnd/alpha dynamics.
-Includes ssthresh, slow start, loss, and short-flow queuing delay.
+New in v4:
+  + Jitter slider J (µs)         — synchronicity dimension
+  + QPS slider  → IAT (µs)       — IAT dimension
+  + N_active(k) based on J       — staggered flow injection
+  + IAT-modified initial conds   — Q0, α0, cwnd0 from prev burst
+  + Trajectory-based regime      — based on max_Q vs K, B and T_burst vs RTT, T_C
+  + Four-dimension summary panel
+  + Decision tree panel
 
-Fixed parameters:
-  C        = 25 Gbps = 3125 bytes/us = 2.0833 pkts/us
-  RTT_prop = 100 us   (avg datacenter RTT)
-  K        = 65 packets  (ECN threshold)
-  g        = 1/16        (DCTCP EWMA gain)
-  PKT      = 1500 bytes  (packet size)
-  cwnd_min = 2 packets   (protocol floor)
-  BDP      = C_pkts * RTT_prop = 208.33 pkts
-
-Slider parameters:
-  N       = number of incast flows
-  S       = flow size (KB)
-  cwnd_0  = initial cwnd (pkts)
-  B       = buffer size (pkts)
+Fixed constants:
+  C        = 25 Gbps = 3125 B/µs = 2.083 pkts/µs
+  RTT_prop = 20 µs   (same-rack datacenter)
+  K        = 65 pkts (ECN threshold)
+  g        = 1/16    (DCTCP EWMA gain)
+  cwnd_min = 2 pkts  (protocol floor)
+  BDP      = C * RTT_prop = 41.67 pkts
+  T_C      = RTT_prop / g = 320 µs  (DCTCP convergence time)
 
 Equations (per RTT k):
-  RTT_k       = RTT_prop + Q_k / C_pkts
-  Q_{k+1}     = max(0,  N * cwnd_k - BDP)       [Q_k cancels via ACK clocking]
+  RTT_k     = RTT_prop + Q_k / C_pkts
+  N_act(k)  = min(N, floor(T_wall*N/J)+1)   if J>0 else N
+  inj_k     = N_old*cwnd_k + N_new*cwnd_init [old flows at cwnd_k, new at cwnd_init]
+  Q_{k+1}   = max(0, inj_k - BDP)           [Q_k cancels via ACK clocking]
+  F_k       = max(0, Q_{k+1}-K) / inj_k     [corrected: denominator = total injection]
+  α_{k+1}   = (1-g)*α_k + g*F_k
+  loss if Q_{k+1}>B: ssthresh=max(cwnd_min,cwnd/2), cwnd=cwnd_min, α reset
+  cwnd update: DCTCP decrease / slow start / congestion avoidance
 
-  -- Loss check --
-  if Q_{k+1} > B:
-      ssthresh   = max(cwnd_min, cwnd_k / 2)
-      cwnd_{k+1} = cwnd_min
-      alpha unchanged
+IAT initial conditions (from previous burst end state):
+  Q_0  = max(0, Q_end - C_pkts * IAT)
+  α_0  = α_end * (1-g)^(IAT/RTT_prop)
+  cw_0 = min(cwnd_init, cw_end + IAT/RTT_prop)
 
-  -- No loss --
-  F_k         = max(0, Q_{k+1} - K) / (N * cwnd_k)   [corrected denominator]
-  alpha_{k+1} = (1-g)*alpha_k + g*F_k
-  if Q_{k+1} > K :  cwnd_{k+1} = max(cwnd_min, cwnd_k*(1 - alpha_{k+1}/2))
-  elif cwnd_k < ssthresh: cwnd_{k+1} = min(cwnd_k*2, ssthresh)  [slow start]
-  else:               cwnd_{k+1} = cwnd_k + 1                   [cong. avoid.]
+Recovery timescales:
+  T_drain = Q_end / C_pkts          (queue drains)
+  T_α     = RTT_prop / g = T_C      (α decays to ~0)
+  T_cwnd  = (cwnd_init-cw_end)*RTT  (cwnd recovers)
 
-  BCT       = sum(RTT_k for k=0..K*)          [burst completion time]
-  BCT_ideal = N * S_bytes / C_bytes + RTT_prop [serialisation lower bound]
-
-Short-flow queuing delay (metric for medium-regime harm):
-  A single-packet short flow arriving at RTT k sees queue Q_k ahead of it.
-  short_qdelay_k   = Q_k / C_pkts                   [us]
-  short_FCT_k      = RTT_prop + short_qdelay_k       [us]
-  short_FCT_ideal  = RTT_prop + K / C_pkts           [us]  (queue at K)
-  Steady-state values use the last third of simulation RTTs.
-
-Regime definitions (principled):
-  Good   : DCTCP operating as intended.
-           Queue settles ~K. cwnd finds equilibrium above protocol floor.
-           Short flows experience expected queuing delay ~K/C.
-           BCT ≈ BCT_ideal (link fully utilised).
-
-  Medium : DCTCP objective violated — short queues not maintained.
-           cwnd hits protocol floor (1-2 MSS). Queue sits at Q* >> K.
-           BCT ≈ BCT_ideal (buffer never drains, link stays utilised).
-           BUT short flows see Q*/C queuing delay instead of K/C — significantly worse.
-
-  Bad    : Burst itself is harmed.
-           Buffer overflow → drops → retransmissions → BCT > BCT_ideal.
+Regime (trajectory-based):
+  Bad      : max_Q > B  (drops occur)
+  Good     : max_Q ≤ K  (DCTCP never triggered)
+  Degraded : K < max_Q ≤ B, with sub-cases:
+    - DCTCP blind  : T_burst < RTT_prop
+    - Case 2       : cwnd hit protocol floor
+    - Case 1 partial: T_burst < T_C
+    - Case 1 conv  : T_burst ≥ T_C
 """
 
 import numpy as np
@@ -66,409 +54,474 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.widgets import Slider, Button
 from matplotlib.patches import FancyBboxPatch
-import matplotlib.lines as mlines
 
-# ── Fixed physical constants ───────────────────────────────────────────────
-PKT           = 1500
-C_BYTES       = 25e9 / 8 / 1e6   # 3125.0  bytes/us
-C_PKTS        = C_BYTES / PKT     # 2.0833  pkts/us
-RTT_PROP      = 20.0             # us
-K_PKTS        = 65.0              # ECN threshold, packets
-G             = 1.0 / 16
-CWND_MIN      = 2.0               # protocol floor, packets
-BDP           = C_PKTS * RTT_PROP # 208.33 packets
-MAX_RTTS      = 5000
-TABLE_MAX_ROWS= 30
-SSTHRESH_INIT = 10.0 # check how much this generally is....
+# ── Fixed network constants ───────────────────────────────────────────────────
+PKT_B   = 1500                    # bytes per packet
+C_BUS   = 25e9 / 8 / 1e6         # 3125.0 B/µs
+C_PKT   = C_BUS / PKT_B          # ~2.083 pkts/µs
+RTT_P   = 20.0                    # µs  propagation RTT
+K_PKT   = 65.0                    # ECN threshold, packets
+G       = 1.0 / 16               # DCTCP EWMA gain
+CW_MIN  = 2.0                     # protocol floor, packets
+BDP     = C_PKT * RTT_P           # ~41.67 packets
+T_C     = RTT_P / G               # 320 µs  DCTCP convergence time
+SSTH0   = 1e6                     # initial ssthresh (≈ ∞)
+MXRTT   = 5000                    # simulation cap
 
-# ideal short-flow queuing delay: queue sitting exactly at K
-SHORT_QDELAY_IDEAL = K_PKTS / C_PKTS          # us
-SHORT_FCT_IDEAL    = RTT_PROP + SHORT_QDELAY_IDEAL  # us
+SQD_ID  = K_PKT / C_PKT          # ideal short-flow queuing delay µs
+SFCT_ID = RTT_P + SQD_ID          # ideal short-flow FCT µs
+
+# Colour palette
+C = dict(
+    Q='#378ADD', K='#E24B4A', B='#A32D2D', CW='#1D9E75',
+    SS='#BA7517', AL='#534AB7', FK='#D4537E', RT='#0F6E56',
+    SQ='#D85A30', SQI='#639922', LO='#E24B4A',
+    GOOD='#1D9E75', DEG='#BA7517', BAD='#A32D2D', NN='#555555',
+)
 
 
-# ── Core simulation ────────────────────────────────────────────────────────
-def simulate(N, S_KB, cwnd0, B_pkts):
-    S_bytes  = S_KB * 1000.0
-    S_pkts   = S_bytes / PKT
+# ── Core per-RTT simulation ───────────────────────────────────────────────────
+def _run(N, Sp, cwi, cw0, Q0, a0, Bp, J):
+    """
+    Simulate one incast burst.
+    N   = number of flows
+    Sp  = flow size (packets per flow)
+    cwi = cwnd_init (initial window for flows joining mid-burst)
+    cw0 = cwnd at burst start (may differ from cwi due to IAT recovery)
+    Q0  = initial queue (from IAT)
+    a0  = initial alpha (from IAT)
+    Bp  = buffer size packets
+    J   = jitter window µs (0 = fully synchronous)
+    """
+    Q = Q0; cw = float(cw0); a = float(a0); ss = SSTH0; cum = 0.0
+    Tw = 0.0                         # wall-clock time µs
+    Np = 1 if J > 0 else N           # flows active at t=0
 
-    Q        = 0.0
-    cw       = float(cwnd0)
-    alpha    = 0.0
-    ssthresh = SSTHRESH_INIT
-    cum      = 0.0
+    ks=[]; Qs=[]; CWs=[]; As=[]; Fs=[]; RTs=[]; SSs=[]; Nacs=[]; Sq=[]; Lo=[]
 
-    ks, Qs, CWs, Als, Fks, RTTs, SSTs, Losses = [], [], [], [], [], [], [], []
+    for k in range(MXRTT):
+        rtt = RTT_P + Q / C_PKT
 
-    for k in range(MAX_RTTS):
-        RTTk = RTT_PROP + Q / C_PKTS
+        # Active flows based on wall-clock progress through jitter window
+        Na  = min(N, int(Tw * N / J) + 1) if J > 0 else N
+        Nn  = max(0, Na - Np)            # new flows joining this RTT
+        No  = Np                          # old flows already active
 
-        ks.append(k);   Qs.append(Q);     CWs.append(cw)
-        Als.append(alpha); RTTs.append(RTTk); SSTs.append(ssthresh)
+        # Record state at start of RTT k
+        ks.append(k); Qs.append(Q); CWs.append(cw); As.append(a)
+        RTs.append(rtt); SSs.append(ss); Nacs.append(Na); Sq.append(Q / C_PKT)
 
-        Qnext = max(0.0, N * cw - BDP)
+        # Aggregate injection: old flows at cw, new flows at cwi
+        inj  = max(1.0, No * cw + Nn * cwi)
+        Qnxt = max(0.0, inj - BDP)
 
-        # ── loss: buffer overflow ──────────────────────────────────────────
-        if Qnext > B_pkts:
-            Losses.append(k)
-            Fks.append(0.0)
-            ssthresh   = max(CWND_MIN, cw / 2.0)
-            cw_next    = CWND_MIN
-            alpha_next = alpha
+        # ── Loss: buffer overflow ─────────────────────────────────────────
+        if Qnxt > Bp:
+            Lo.append(k); Fs.append(0.0)
+            ss   = max(CW_MIN, cw / 2.0)
+            cw1  = CW_MIN
+            a1   = 0.0              # reset α after RTO
+            Qnxt = Bp               # cap queue at buffer
 
+        # ── No loss ───────────────────────────────────────────────────────
         else:
-            # ── ECN marking fraction [denominator = N*cwnd_k] ─────────────
-            Fk         = max(0.0, Qnext - K_PKTS) / (N * cw) if cw > 0 else 0.0
-            Fks.append(Fk)
-            alpha_next = (1.0 - G) * alpha + G * Fk
+            Fk = max(0.0, Qnxt - K_PKT) / inj
+            Fs.append(Fk)
+            a1 = (1 - G) * a + G * Fk
 
-            if Qnext > K_PKTS:                          # DCTCP decrease
-                cw_next = max(CWND_MIN, cw * (1.0 - alpha_next / 2.0))
-            elif cw < ssthresh:                          # slow start
-                cw_next = min(cw * 2.0, ssthresh)
-            else:                                        # cong. avoidance
-                cw_next = cw + 1.0
+            if   Qnxt > K_PKT:  cw1 = max(CW_MIN, cw * (1 - a1 / 2))  # DCTCP decrease
+            elif cw < ss:       cw1 = min(cw * 2, ss)                   # slow start
+            else:               cw1 = cw + 1.0                           # cong. avoidance
 
+        # Blend new flows (they arrive at cwi, not cw1)
+        if Nn > 0 and Na > 0:
+            cw1 = (No * cw1 + Nn * cwi) / Na
+
+        # Track one flow's cumulative bytes sent
         cum += cw
-        if cum >= S_pkts:
-            ks.append(k + 1);    Qs.append(Qnext);   CWs.append(cw_next)
-            Als.append(alpha_next); Fks.append(Fks[-1])
-            RTTs.append(RTT_PROP + Qnext / C_PKTS);  SSTs.append(ssthresh)
+        if cum >= Sp:
+            # Record final state
+            ks.append(k+1); Qs.append(Qnxt); CWs.append(cw1); As.append(a1)
+            Fs.append(Fs[-1]); RTs.append(RTT_P + Qnxt / C_PKT)
+            SSs.append(ss); Nacs.append(Na); Sq.append(Qnxt / C_PKT)
             break
 
-        Q, cw, alpha = Qnext, cw_next, alpha_next
+        Tw += rtt; Q = Qnxt; cw = cw1; a = a1; Np = Na
 
-    # ── derived arrays ─────────────────────────────────────────────────────
-    Qs_arr  = np.array(Qs)
-    CWs_arr = np.array(CWs)
-
-    # short-flow queuing delay at each RTT k = Q_k / C_pkts
-    short_qdelay = Qs_arr / C_PKTS           # us
-    short_fct    = RTT_PROP + short_qdelay   # us
-
-    # steady-state window = last third of simulation
-    n        = len(ks)
-    ss_start = max(0, n * 2 // 3)
-    Qs_ss    = Qs_arr[ss_start:]
-    CWs_ss   = CWs_arr[ss_start:]
-    sq_ss    = short_qdelay[ss_start:]
-
-    ss_mean_Q       = float(Qs_ss.mean())
-    ss_mean_qdelay  = float(sq_ss.mean())
-    ss_mean_sfct    = RTT_PROP + ss_mean_qdelay
-    sfct_inflation  = ss_mean_sfct / SHORT_FCT_IDEAL
-
-    bct       = sum(RTTs)
-    bct_ideal = N * S_bytes / C_BYTES + RTT_PROP
-
-    # ── regime detection ───────────────────────────────────────────────────
-    # Principled definitions:
-    #   Good   — queue settles ~K, cwnd above floor  (DCTCP as intended)
-    #   Medium — cwnd hits protocol floor, Q* >> K   (objective violated)
-    #   Bad    — buffer overflow, drops               (burst harmed)
-    if len(Losses) > 0:
-        regime = "Bad  —  drops occur, BCT inflated"
-    elif CWs_ss.min() <= CWND_MIN * 1.1:
-        regime = "Medium  —  cwnd at floor, Q* >> K, short flows harmed"
-    elif Qs_ss.max() <= K_PKTS * 1.5:
-        regime = "Good  —  queue ~K, DCTCP operating as intended"
-    else:
-        # queue still elevated but cwnd above floor — converging toward K
-        regime = "Good  —  queue ~K, DCTCP operating as intended"
+    # Derived scalars
+    Qa = np.array(Qs); Ca = np.array(CWs)
+    Ra = np.array(RTs); Sa = np.array(Sq)
+    n  = len(ks); ss_i = max(0, n * 2 // 3)
+    sm_Q  = float(Qa[ss_i:].mean()) if n > 0 else 0.0
+    sm_sq = float(Sa[ss_i:].mean()) if n > 0 else 0.0
+    bct   = float(Ra.sum())
+    bct_i = N * Sp * PKT_B / C_BUS + RTT_P   # N·S/C + RTT_prop
 
     return dict(
-        ks            = np.array(ks),
-        Qs            = Qs_arr,
-        CWs           = CWs_arr,
-        Als           = np.array(Als),
-        Fks           = np.array(Fks),
-        RTTs          = np.array(RTTs),
-        SSTs          = np.array(SSTs),
-        Losses        = Losses,
-        short_qdelay  = short_qdelay,
-        short_fct     = short_fct,
-        ss_mean_Q     = ss_mean_Q,
-        ss_mean_qdelay= ss_mean_qdelay,
-        ss_mean_sfct  = ss_mean_sfct,
-        sfct_inflation= sfct_inflation,
-        bct           = bct,
-        bct_ideal     = bct_ideal,
-        k_star        = ks[-1],
-        regime        = regime,
-        N=N, S_KB=S_KB, cwnd0=cwnd0, B_pkts=B_pkts,
+        ks=np.array(ks), Qs=Qa, CWs=Ca, As=np.array(As),
+        Fs=np.array(Fs), RTs=Ra, SSs=np.array(SSs),
+        Nacs=np.array(Nacs), Sq=Sa, Lo=Lo,
+        sm_Q=sm_Q, sm_sq=sm_sq, sm_sfct=RTT_P + sm_sq,
+        sfct_inf=(RTT_P + sm_sq) / SFCT_ID,
+        bct=bct, bct_i=bct_i, kstar=ks[-1],
     )
 
 
-# ── Colours ────────────────────────────────────────────────────────────────
-COL = dict(
-    Q     = '#378ADD',
-    K     = '#E24B4A',
-    B     = '#A32D2D',
-    CW    = '#1D9E75',
-    SST   = '#BA7517',
-    AL    = '#534AB7',
-    FK    = '#D4537E',
-    RTT   = '#0F6E56',
-    LOSS  = '#E24B4A',
-    SQ    = '#D85A30',      # short-flow queuing delay
-    SQI   = '#639922',      # ideal short-flow queuing delay
-)
+def simulate(N, S_KB, cwi, Bp, J, QPS):
+    """Full simulation: clean burst → IAT recovery → actual burst → regime."""
+    Sp    = S_KB * 1000.0 / PKT_B
+    IAT   = 1e6 / QPS if QPS > 0 else 1e9
 
-REGIME_COLORS = {
-    'Good':   '#1D9E75',
-    'Medium': '#BA7517',
-    'Bad':    '#A32D2D',
-}
+    # Step 1: clean burst (Q=0, α=0, cw=cwi) → previous burst end state
+    prev  = _run(N, Sp, cwi, cwi, 0.0, 0.0, Bp, J)
+    Q_e   = float(prev['Qs'][-1])
+    a_e   = float(prev['As'][-1])
+    cw_e  = float(prev['CWs'][-1])
 
-def _regime_color(regime):
-    return next((v for k, v in REGIME_COLORS.items() if k in regime), '#888')
+    # Step 2: IAT recovery → initial conditions for next burst
+    Q_0   = max(0.0, Q_e  - C_PKT * IAT)
+    a_0   = a_e  * ((1 - G) ** (IAT / RTT_P))
+    cw_0  = min(float(cwi), cw_e + IAT / RTT_P)
 
-def _style_ax(ax, ylabel, ylim=None):
+    # Recovery timescales
+    T_drain = Q_e / C_PKT            # µs until queue drains fully
+    T_alpha = T_C                    # µs until α decays to ~1/e (= RTT_P/g)
+    T_cwnd  = max(0.0, (cwi - cw_e) * RTT_P)  # µs until cwnd recovers
+
+    # Step 3: actual burst with IAT-modified initial conditions
+    d = _run(N, Sp, cwi, cw_0, Q_0, a_0, Bp, J)
+
+    # ── Regime classification (trajectory-based) ──────────────────────────
+    max_Q  = float(d['Qs'].max())
+    T_bst  = d['bct']
+    cw_min = float(d['CWs'].min())
+    has_lo = len(d['Lo']) > 0
+    N_eff  = int(max(d['Nacs'])) if len(d['Nacs']) > 0 else N
+
+    if has_lo:
+        reg = 'Bad';      rsub = 'Buffer overflow → drops → RTO'
+    elif max_Q > K_PKT:
+        if   T_bst < RTT_P:         reg = 'Degraded'; rsub = 'DCTCP blind: T_burst < RTT_prop'
+        elif cw_min <= CW_MIN*1.1:  reg = 'Degraded'; rsub = 'Case 2: cwnd→floor, Q*>>K'
+        elif T_bst >= T_C:          reg = 'Degraded'; rsub = 'Case 1: DCTCP converged, queue ~K'
+        else:                       reg = 'Degraded'; rsub = 'Case 1: partial, T_burst < T_C'
+    else:
+        reg = 'Good'; rsub = 'Queue ≤ K throughout, DCTCP not triggered'
+
+    d.update(
+        N=N, S_KB=S_KB, cwi=cwi, Bp=Bp, J=J, QPS=QPS, IAT=IAT,
+        Q_e=Q_e, a_e=a_e, cw_e=cw_e,
+        Q_0=Q_0, a_0=a_0, cw_0=cw_0,
+        T_drain=T_drain, T_alpha=T_alpha, T_cwnd=T_cwnd,
+        max_Q=max_Q, T_bst=T_bst, cw_min=cw_min, has_lo=has_lo, N_eff=N_eff,
+        reg=reg, rsub=rsub,
+        i_val=N*cw_0, i_good=BDP+K_PKT, i_loss=BDP+Bp,
+    )
+    return d
+
+
+# ── Plot helpers ──────────────────────────────────────────────────────────────
+def _sty(ax, yl, ylim=None):
     ax.set_facecolor('#f9f9f7')
     ax.tick_params(labelsize=8, colors='#555')
-    ax.set_ylabel(ylabel, fontsize=8, color='#555')
-    ax.set_xlabel('RTT  k', fontsize=8, color='#555')
-    for sp in ax.spines.values():
-        sp.set_color('#ddd')
-    ax.grid(True, color='#e4e4e4', linewidth=0.5, zorder=0)
-    if ylim:
-        ax.set_ylim(ylim)
+    ax.set_ylabel(yl, fontsize=8, color='#555')
+    ax.set_xlabel('RTT k', fontsize=8, color='#555')
+    for sp in ax.spines.values(): sp.set_color('#ddd')
+    ax.grid(True, color='#e4e4e4', lw=0.5, zorder=0)
+    if ylim: ax.set_ylim(ylim)
 
-def _mark_losses(ax, losses):
-    for k in losses:
-        ax.axvspan(k - 0.5, k + 0.5, color=COL['LOSS'], alpha=0.18, zorder=1)
+def _lo(ax, Lo):
+    for k in Lo:
+        ax.axvspan(k - 0.5, k + 0.5, color=C['LO'], alpha=0.18, zorder=1)
 
 
-# ── Draw ───────────────────────────────────────────────────────────────────
-def draw_all(d, axs, info_ax, table_ax):
-    ax_Q, ax_CW, ax_RTT, ax_A, ax_SQ = axs
-    for ax in axs:
-        ax.cla()
-    info_ax.cla(); info_ax.axis('off')
-    table_ax.cla(); table_ax.axis('off')
-    info_ax.set_xlim(0, 1); info_ax.set_ylim(0, 1)
+def draw_plots(axs, d):
+    aQ, aCW, aRT, aA, aSQ = axs
+    for ax in axs: ax.cla()
+    L = d['ks']; Lo = d['Lo']
 
-    ks     = d['ks']
-    losses = d['Losses']
+    # 1. Queue
+    aQ.plot(L, d['Qs'], color=C['Q'],  lw=1.5, label='$Q_k$',             zorder=3)
+    aQ.axhline(K_PKT,     color=C['K'], lw=1.0, ls='--', label=f'K={K_PKT:.0f} pkts')
+    aQ.axhline(d['Bp'],   color=C['B'], lw=1.0, ls='-.', label=f'B={d["Bp"]:.0f} pkts')
+    aQ.axhline(BDP,       color='#999', lw=0.7, ls=':',  label=f'BDP={BDP:.1f}')
+    _lo(aQ, Lo); aQ.legend(fontsize=7, loc='upper right', framealpha=0.9)
+    _sty(aQ, 'Queue (pkts)')
 
-    # ── 1. Queue ───────────────────────────────────────────────────────────
-    ax_Q.plot(ks, d['Qs'], color=COL['Q'], lw=1.5, label='$Q_k$', zorder=3)
-    ax_Q.axhline(K_PKTS,     color=COL['K'],  lw=1.0, ls='--',
-                 label=f'K = {K_PKTS:.0f} pkts  (ECN threshold)')
-    ax_Q.axhline(d['B_pkts'],color=COL['B'],  lw=1.0, ls='-.',
-                 label=f'B = {d["B_pkts"]:.0f} pkts  (buffer)')
-    ax_Q.axhline(BDP,        color='#999',    lw=0.7, ls=':',
-                 label=f'BDP = {BDP:.1f} pkts')
-    _mark_losses(ax_Q, losses)
-    ax_Q.legend(fontsize=7, loc='upper right', framealpha=0.9)
-    _style_ax(ax_Q, 'Queue  (pkts)')
+    # 2. cwnd + ssthresh
+    aCW.plot(L, d['CWs'], color=C['CW'], lw=1.5, label='$cwnd_k$',        zorder=3)
+    aCW.plot(L, d['SSs'], color=C['SS'], lw=1.0, ls='--', label='$ssthresh_k$', zorder=2)
+    aCW.axhline(CW_MIN,   color='#bbb',  lw=0.7, ls=':',
+                label=f'$cwnd_{{min}}$={CW_MIN:.0f}')
+    _lo(aCW, Lo); aCW.legend(fontsize=7, loc='upper right', framealpha=0.9)
+    _sty(aCW, 'cwnd (pkts)')
 
-    # ── 2. cwnd + ssthresh ────────────────────────────────────────────────
-    ax_CW.plot(ks, d['CWs'], color=COL['CW'],  lw=1.5, label='$cwnd_k$',   zorder=3)
-    ax_CW.plot(ks, d['SSTs'],color=COL['SST'], lw=1.0, ls='--',
-               label='$ssthresh_k$', zorder=2)
-    ax_CW.axhline(CWND_MIN, color='#bbb', lw=0.7, ls=':',
-                  label=f'$cwnd_{{min}}$ = {CWND_MIN:.0f} pkts')
-    _mark_losses(ax_CW, losses)
-    ax_CW.legend(fontsize=7, loc='upper right', framealpha=0.9)
-    _style_ax(ax_CW, 'cwnd  (pkts)')
+    # 3. RTT
+    aRT.plot(L, d['RTs'], color=C['RT'], lw=1.2, label='$RTT_k$',         zorder=3)
+    aRT.axhline(RTT_P,    color=C['K'],  lw=0.8, ls='--',
+                label=f'$RTT_{{prop}}$={RTT_P:.0f} µs')
+    _lo(aRT, Lo); aRT.legend(fontsize=7, loc='upper right', framealpha=0.9)
+    _sty(aRT, 'RTT (µs)')
 
-    # ── 3. RTT ────────────────────────────────────────────────────────────
-    ax_RTT.plot(ks, d['RTTs'], color=COL['RTT'], lw=1.2, label='$RTT_k$', zorder=3)
-    ax_RTT.axhline(RTT_PROP, color=COL['K'], lw=0.8, ls='--',
-                   label=f'$RTT_{{prop}}$ = {RTT_PROP:.0f} µs')
-    _mark_losses(ax_RTT, losses)
-    ax_RTT.legend(fontsize=7, loc='upper right', framealpha=0.9)
-    _style_ax(ax_RTT, 'RTT  (µs)')
+    # 4. α and F_k
+    aA.plot(L, d['As'], color=C['AL'], lw=1.5, label=r'$\alpha_k$',       zorder=3)
+    aA.plot(L, d['Fs'], color=C['FK'], lw=1.0, ls='--', label='$F_k$',    zorder=2)
+    _lo(aA, Lo); aA.legend(fontsize=7, loc='upper right', framealpha=0.9)
+    _sty(aA, r'$\alpha$ / $F$', ylim=(0, 1.05))
 
-    # ── 4. alpha / F_k ────────────────────────────────────────────────────
-    ax_A.plot(ks, d['Als'], color=COL['AL'], lw=1.5, label=r'$\alpha_k$', zorder=3)
-    ax_A.plot(ks, d['Fks'], color=COL['FK'], lw=1.0, ls='--',
-              label='$F_k$', zorder=2)
-    _mark_losses(ax_A, losses)
-    ax_A.legend(fontsize=7, loc='upper right', framealpha=0.9)
-    _style_ax(ax_A, r'$\alpha$ / $F$', ylim=(0, 1.05))
+    # 5. Short-flow queuing delay
+    aSQ.plot(L, d['Sq'], color=C['SQ'],  lw=1.5,
+             label='Short-flow qdelay  $= Q_k/C$',                        zorder=3)
+    aSQ.axhline(SQD_ID,    color=C['SQI'], lw=1.0, ls='--',
+                label=f'Ideal $K/C$ = {SQD_ID:.1f} µs')
+    aSQ.axhline(d['sm_sq'], color=C['SQ'], lw=0.8, ls=':',
+                label=f'SS mean = {d["sm_sq"]:.1f} µs')
+    _lo(aSQ, Lo); aSQ.legend(fontsize=7, loc='upper right', framealpha=0.9)
+    _sty(aSQ, 'Short-flow qdelay (µs)')
 
-    # ── 5. Short-flow queuing delay ───────────────────────────────────────
-    # A short flow (1 pkt) arriving at RTT k finds Q_k bytes ahead of it.
-    # Its queuing delay = Q_k / C_pkts us. Its FCT = RTT_prop + Q_k/C_pkts.
-    ax_SQ.plot(ks, d['short_qdelay'], color=COL['SQ'], lw=1.5,
-               label='Short-flow queueing delay  $= Q_k / C$', zorder=3)
-    ax_SQ.axhline(SHORT_QDELAY_IDEAL, color=COL['SQI'], lw=1.0, ls='--',
-                  label=f'Ideal  $= K/C$ = {SHORT_QDELAY_IDEAL:.1f} µs  (queue at K)')
-    ax_SQ.axhline(d['ss_mean_qdelay'], color=COL['SQ'], lw=0.8, ls=':',
-                  label=f'Steady-state mean = {d["ss_mean_qdelay"]:.1f} µs')
-    _mark_losses(ax_SQ, losses)
-    ax_SQ.legend(fontsize=7, loc='upper right', framealpha=0.9)
-    _style_ax(ax_SQ, 'Short-flow qdelay  (µs)')
 
-    # loss overlay on all axes
-    if losses:
-        loss_patch = mlines.Line2D([], [], color=COL['LOSS'], alpha=0.5,
-                                   lw=6, label=f'Loss events ({len(losses)})')
-        for ax in axs:
-            h, l = ax.get_legend_handles_labels()
-            ax.legend(handles=h + [loss_patch], fontsize=7,
-                      loc='upper right', framealpha=0.9)
+def draw_info(ax, d):
+    """Stats summary panel (top right)."""
+    ax.cla(); ax.axis('off'); ax.set_facecolor('#f5f4f0')
+    rc  = C['GOOD'] if d['reg']=='Good' else C['BAD'] if d['reg']=='Bad' else C['DEG']
+    bci = d['bct'] / d['bct_i'] if d['bct_i'] > 0 else 999.9
 
-    # ── Info panel ─────────────────────────────────────────────────────────
-    bct_inf = d['bct'] / d['bct_ideal'] if d['bct_ideal'] > 0 else float('inf')
-    rc      = _regime_color(d['regime'])
-
-    info_rows = [
-        # ── Regime ──
-        ("Regime",              d['regime']),
-        ("─", ""),
-        # ── Inputs ──
-        ("N  (flows)",          str(d['N'])),
-        ("S  (flow size)",      f"{d['S_KB']} KB  =  {d['S_KB']*1000/PKT:.0f} pkts"),
-        ("cwnd₀",               f"{d['cwnd0']} pkts"),
-        ("B  (buffer)",         f"{d['B_pkts']:.0f} pkts"),
-        ("─", ""),
-        # ── BCT (incast burst) ──
-        ("BCT",                 f"{d['bct']:.1f} µs"),
-        ("BCT_ideal",           f"{d['bct_ideal']:.1f} µs   [= N·S/C + RTT_prop]"),
-        ("BCT inflation",       f"{bct_inf:.3f}×   "
-                                + ("← burst unharmed" if bct_inf < 1.01 else "← burst harmed")),
-        ("Loss events",         str(len(d['Losses'])) +
-                                (f"  @ RTTs {d['Losses'][:4]}" if d['Losses'] else "  (none)")),
-        ("─", ""),
-        # ── Short-flow queuing delay ──
-        ("SS mean queue Q*",    f"{d['ss_mean_Q']:.1f} pkts"),
-        ("SS mean qdelay",      f"{d['ss_mean_qdelay']:.2f} µs   [= Q*/C]"),
-        ("Ideal qdelay",        f"{SHORT_QDELAY_IDEAL:.2f} µs   [= K/C]"),
-        ("Short-flow FCT",      f"{d['ss_mean_sfct']:.2f} µs   [= RTT_prop + Q*/C]"),
-        ("Short-flow FCT ideal",f"{SHORT_FCT_IDEAL:.2f} µs   [= RTT_prop + K/C]"),
-        ("Short-FCT inflation", f"{d['sfct_inflation']:.2f}×   "
-                                + ("← short flows unharmed" if d['sfct_inflation'] < 1.05
-                                   else "← short flows harmed")),
-        ("─", ""),
-        # ── Fixed params ──
-        ("C",                   "25 Gbps = 3125 B/µs = 2.083 pkts/µs"),
-        ("RTT_prop",            f"{RTT_PROP} µs"),
-        ("BDP",                 f"{BDP:.2f} pkts"),
-        ("K  (ECN thresh)",     f"{K_PKTS} pkts"),
-        ("g",                   "1/16"),
-        ("cwnd_min",            f"{CWND_MIN} pkts"),
-        ("K*  (RTTs done)",     str(d['k_star'])),
+    rows = [
+        ('Regime',          d['reg'],                                              True),
+        ('─', '', False),
+        ('N',               f"{d['N']} flows",                                    False),
+        ('S',               f"{d['S_KB']} KB = {d['S_KB']*1000/PKT_B:.0f} pkts", False),
+        ('cwnd_init',       f"{d['cwi']} pkts",                                   False),
+        ('B  (buffer)',     f"{d['Bp']:.0f} pkts",                                False),
+        ('J  (jitter)',     f"{d['J']:.1f} µs",                                  False),
+        ('QPS → IAT',       f"{d['QPS']:.0f} → {d['IAT']:.0f} µs",              False),
+        ('─', '', False),
+        ('BCT',             f"{d['bct']:.1f} µs",                                False),
+        ('BCT_ideal',       f"{d['bct_i']:.1f} µs  [N·S/C + RTT_prop]",         False),
+        ('max Q',           f"{d['max_Q']:.1f} pkts",                           True),
+        ('BCT inflation',   f"{bci:.3f}×",                                        True),
+        ('Loss events',     f"{len(d['Lo'])}",                                    True),
+        ('─', '', False),
+        ('SS mean Q*',      f"{d['sm_Q']:.1f} pkts",                             False),
+        ('SS mean qdelay',  f"{d['sm_sq']:.2f} µs",                              False),
+        ('Ideal qdelay',    f"{SQD_ID:.2f} µs  [K/C]",                           False),
+        ('SFCT inflation',  f"{d['sfct_inf']:.2f}×",                              True),
+        ('─', '', False),
+        ('BDP',             f"{BDP:.2f} pkts",                                    False),
+        ('T_C',             f"{T_C:.0f} µs",                                     False),
+        ('N_eff',           f"{d['N_eff']} (max flows active)",                  False),
+        ('K*',              f"{d['kstar']} RTTs",                                 False),
     ]
 
-    y, dy = 0.98, 0.043
-    bold_keys = {'Regime', 'BCT inflation', 'Short-FCT inflation', 'Loss events'}
-    for label, value in info_rows:
-        if label == "─":
-            info_ax.axhline(y + 0.005, xmin=0, xmax=1,
-                            color='#ddd', lw=0.7)
-            y -= dy * 0.4
-            continue
-        info_ax.text(0.01, y, label + ':',
-                     transform=info_ax.transAxes,
-                     fontsize=7.5, color='#888', va='top')
-        info_ax.text(0.40, y, value,
-                     transform=info_ax.transAxes,
-                     fontsize=7.5, color='#222', va='top',
-                     fontweight='bold' if label in bold_keys else 'normal')
+    y = 0.98; dy = 0.043
+    bk = {'Regime', 'BCT inflation', 'Loss events', 'SFCT inflation', 'max Q'}
+    for lbl, val, bold in rows:
+        if lbl == '─':
+            ax.axhline(y + 0.005, xmin=0, xmax=1, color='#ddd', lw=0.7)
+            y -= dy * 0.35; continue
+        ax.text(0.02, y, lbl + ':', transform=ax.transAxes,
+                fontsize=7.5, color='#888', va='top')
+        ax.text(0.42, y, val, transform=ax.transAxes,
+                fontsize=7.5,
+                color=C['B'] if lbl == 'max Q' else (rc if lbl == 'Regime' else '#222'),
+                va='top', fontweight='bold' if bold or lbl == 'max Q' else 'normal')
         y -= dy
 
-    # regime badge
-    fancy = FancyBboxPatch((0, 0), 1, 0.038, boxstyle="round,pad=0.01",
-                            transform=info_ax.transAxes,
-                            facecolor=rc, edgecolor='none', alpha=0.18)
-    info_ax.add_patch(fancy)
-    info_ax.text(0.5, 0.019, d['regime'],
-                 transform=info_ax.transAxes,
-                 fontsize=8, color=rc, va='center', ha='center', fontweight='bold')
-
-    # ── Per-RTT table ──────────────────────────────────────────────────────
-    hdr = (f"{'k':>4}  {'Q':>7}  {'cwnd':>6}  {'ssth':>6}  "
-           f"{'RTT':>7}  {'α':>6}  {'F':>6}  {'qd_us':>7}  {'loss':>4}")
-    lines = [hdr, "─" * len(hdr)]
-    for i, k in enumerate(d['ks'][:TABLE_MAX_ROWS]):
-        lf = "●" if k in d['Losses'] else ""
-        lines.append(
-            f"{k:4d}  {d['Qs'][i]:7.1f}  {d['CWs'][i]:6.1f}  "
-            f"{d['SSTs'][i]:6.1f}  {d['RTTs'][i]:7.1f}  "
-            f"{d['Als'][i]:6.4f}  {d['Fks'][i]:6.4f}  "
-            f"{d['short_qdelay'][i]:7.2f}  {lf:>4}"
-        )
-    if len(d['ks']) > TABLE_MAX_ROWS:
-        lines.append(f"... ({len(d['ks']) - TABLE_MAX_ROWS} more RTTs not shown)")
-
-    table_ax.text(0.01, 0.99, "\n".join(lines),
-                  fontsize=6.5, family='monospace',
-                  va='top', ha='left', color='#333',
-                  transform=table_ax.transAxes)
+    fp = FancyBboxPatch((0, 0), 1, 0.037, boxstyle="round,pad=0.01",
+                         transform=ax.transAxes,
+                         facecolor=rc, edgecolor='none', alpha=0.20)
+    ax.add_patch(fp)
+    ax.text(0.5, 0.018, d['reg'], transform=ax.transAxes,
+            fontsize=9, color=rc, va='center', ha='center', fontweight='bold')
 
 
-# ── Main ───────────────────────────────────────────────────────────────────
+def draw_dims_tree(ax, d):
+    """Four-dimension summary + decision tree (bottom right panel)."""
+    ax.cla(); ax.axis('off'); ax.set_facecolor('#f5f4f0')
+
+    GC = C['GOOD']; DC = C['DEG']; BC = C['BAD']; NC = C['NN']
+
+    # Build list of (x_indent, text, color, bold)
+    rows = []
+    def L(ind, text, col=NC, bold=False):
+        rows.append((ind, text, col, bold))
+
+    # ── FOUR DIMENSIONS ──────────────────────────────────────────────────
+    L(0, '─── FOUR DIMENSIONS ────────────────────────────────', NC, True)
+    L(0, '')
+
+    # Intensity
+    iv = d['i_val']; ig = d['i_good']; il = d['i_loss']
+    ic = GC if iv < ig else (DC if iv < il else BC)
+    cmp_i = ('< BDP+K  → good' if iv < ig
+              else ('< BDP+B  → degraded' if iv < il else '≥ BDP+B  → bad'))
+    L(0, 'INTENSITY', '#333', True)
+    L(2, f'N × cwnd₀  =  {d["N"]} × {d["cw_0"]:.1f}  =  {iv:.1f} pkts', ic)
+    L(2, f'BDP+K = {ig:.1f}   BDP+B = {il:.1f}   →  {cmp_i}', NC)
+
+    # Duration
+    Tb = d['T_bst']
+    dc = GC if Tb >= T_C else (DC if Tb >= RTT_P else BC)
+    cmp_d = ('< RTT_prop → DCTCP blind' if Tb < RTT_P
+              else ('< T_C → partial response' if Tb < T_C
+                    else '≥ T_C  → DCTCP converged'))
+    L(0, '')
+    L(0, 'DURATION  (output = BCT)', '#333', True)
+    L(2, f'T_burst  = {Tb:.1f} µs', dc)
+    L(2, f'RTT_prop = {RTT_P:.0f} µs    T_C = {T_C:.0f} µs    → {cmp_d}', NC)
+
+    # Synchronicity
+    J = d['J']; Ne = d['N_eff']
+    jc = GC if J >= RTT_P else DC
+    cmp_j = ('J ≥ RTT_prop  → staggered, early feedback possible'
+              if J >= RTT_P else 'J < RTT_prop → all flows commit before feedback')
+    L(0, '')
+    L(0, 'SYNCHRONICITY', '#333', True)
+    L(2, f'J = {J:.1f} µs    (RTT_prop = {RTT_P:.0f} µs)', jc)
+    L(2, f'N_eff = {Ne}   → {cmp_j}', jc)
+
+    # IAT
+    IAT = d['IAT']; Td = d['T_drain']; Ta = d['T_alpha']
+    iac = GC if IAT > Ta else (DC if IAT > Td else BC)
+    cmp_ia = ('> T_α  → full recovery (clean slate)' if IAT > Ta
+               else ('> T_drain → queue drained, α residual' if IAT > Td
+                     else '< T_drain → queue residual, worst case'))
+    L(0, '')
+    L(0, 'IAT  (input = QPS,  output = IAT)', '#333', True)
+    L(2, f'QPS = {d["QPS"]:.0f}  →  IAT = {IAT:.0f} µs    → {cmp_ia}', iac)
+    L(2, f'T_drain={Td:.1f}   T_α={Ta:.0f}   T_cwnd={d["T_cwnd"]:.0f} µs', NC)
+    L(2, f'→  Q₀={d["Q_0"]:.1f}  α₀={d["a_0"]:.3f}  cwnd₀={d["cw_0"]:.1f}', iac)
+
+    # ── DECISION TREE ────────────────────────────────────────────────────
+    L(0, '')
+    L(0, '─── REGIME DECISION TREE ────────────────────────────', NC, True)
+    L(0, '')
+
+    maxQ = d['max_Q']; Tb = d['T_bst']
+    cwm = d['cw_min']; hL = d['has_lo']
+
+    # Node 1: drops?
+    c1 = BC if hL else GC
+    L(0, f'max Q ({maxQ:.1f}) > B ({d["Bp"]:.0f}) ?   {"YES" if hL else "NO"}', c1)
+    if hL:
+        L(2, '→  BAD REGIME', BC, True)
+        L(4, d['rsub'], BC)
+        L(4, f'BCT inflation: {d["bct"]/d["bct_i"]:.2f}×  (drops + RTO)', BC)
+    else:
+        # Node 2: Q > K?
+        c2 = DC if maxQ > K_PKT else GC
+        L(0, f'max Q ({maxQ:.1f}) > K ({K_PKT:.0f}) ?   {"YES" if maxQ>K_PKT else "NO"}', c2)
+        if maxQ <= K_PKT:
+            L(2, '→  GOOD REGIME', GC, True)
+            L(4, d['rsub'], GC)
+            L(4, f'Short-flow SFCT inflation: {d["sfct_inf"]:.2f}×', GC)
+        else:
+            # Node 3: DCTCP blind?
+            c3 = BC if Tb < RTT_P else GC
+            L(0, f'T_burst ({Tb:.1f}) ≥ RTT_prop ({RTT_P:.0f}) ?   {"YES" if Tb>=RTT_P else "NO"}', c3)
+            if Tb < RTT_P:
+                L(2, '→  DEGRADED  (DCTCP blind)', DC, True)
+                L(4, d['rsub'], DC)
+            else:
+                # Node 4: cwnd hit floor?
+                c4 = DC if cwm <= CW_MIN*1.1 else GC
+                L(0, f'cwnd hit floor ({CW_MIN:.0f} pkts) ?   {"YES" if cwm<=CW_MIN*1.1 else "NO"}', c4)
+                if cwm <= CW_MIN * 1.1:
+                    L(2, '→  DEGRADED  — Case 2', DC, True)
+                    L(4, d['rsub'], DC)
+                    L(4, f'SS mean Q* = {d["sm_Q"]:.1f} pkts   (vs K = {K_PKT:.0f})', DC)
+                    L(4, f'Short-flow SFCT inflation: {d["sfct_inf"]:.2f}×', DC)
+                else:
+                    # Node 5: T_burst >= T_C?
+                    c5 = GC if Tb >= T_C else DC
+                    L(0, f'T_burst ({Tb:.1f}) ≥ T_C ({T_C:.0f}) ?   {"YES" if Tb>=T_C else "NO"}', c5)
+                    L(2, '→  DEGRADED  — Case 1', DC, True)
+                    L(4, d['rsub'], DC)
+                    L(4, f'Short-flow SFCT inflation: {d["sfct_inf"]:.2f}×', DC)
+
+    # ── Render lines ──────────────────────────────────────────────────────
+    y = 0.98; dy = 0.044
+    for (ind, text, col, bold) in rows:
+        ax.text(0.01 + ind * 0.020, y, text,
+                transform=ax.transAxes, fontsize=7.0,
+                family='monospace', color=col, va='top',
+                fontweight='bold' if bold else 'normal')
+        y -= dy
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    fig = plt.figure(figsize=(17, 12), facecolor='#fafaf8')
+    fig = plt.figure(figsize=(21, 13), facecolor='#fafaf8')
     fig.suptitle(
-        'DCTCP Regime Simulation  v3  —  25 Gbps · RTT_prop = 100 µs · K = 65 pkts',
-        fontsize=11, color='#333', y=0.99
+        'DCTCP Regime Simulation  v4   ·   25 Gbps  ·  RTT_prop=20µs  ·  K=65pkts  ·  BDP≈41.7pkts  ·  T_C=320µs',
+        fontsize=10.5, color='#333', y=0.99
     )
 
     gs = gridspec.GridSpec(5, 2, figure=fig,
-                           left=0.06, right=0.98,
-                           top=0.96, bottom=0.20,
-                           hspace=0.42, wspace=0.28,
-                           width_ratios=[2.6, 1.0])
+                           left=0.05, right=0.98, top=0.965, bottom=0.215,
+                           hspace=0.42, wspace=0.25,
+                           width_ratios=[2.4, 1.2])
 
-    ax_Q   = fig.add_subplot(gs[0, 0])
-    ax_CW  = fig.add_subplot(gs[1, 0])
-    ax_RTT = fig.add_subplot(gs[2, 0])
-    ax_A   = fig.add_subplot(gs[3, 0])
-    ax_SQ  = fig.add_subplot(gs[4, 0])
-    ax_inf = fig.add_subplot(gs[0:3, 1])
-    ax_tab = fig.add_subplot(gs[3:,  1])
-    ax_inf.set_facecolor('#f5f4f0')
-    ax_tab.set_facecolor('#f5f4f0')
+    aQ  = fig.add_subplot(gs[0, 0]);  aCW = fig.add_subplot(gs[1, 0])
+    aRT = fig.add_subplot(gs[2, 0]);  aA  = fig.add_subplot(gs[3, 0])
+    aSQ = fig.add_subplot(gs[4, 0])
+    aInf = fig.add_subplot(gs[0:2, 1])
+    aDT  = fig.add_subplot(gs[2:,  1])
+    aInf.set_facecolor('#f5f4f0');  aDT.set_facecolor('#f5f4f0')
 
-    sl_bg = '#ece9e2'
-    ax_sN = fig.add_axes([0.06, 0.155, 0.38, 0.020], facecolor=sl_bg)
-    ax_sS = fig.add_axes([0.06, 0.122, 0.38, 0.020], facecolor=sl_bg)
-    ax_sC = fig.add_axes([0.06, 0.089, 0.38, 0.020], facecolor=sl_bg)
-    ax_sB = fig.add_axes([0.06, 0.056, 0.38, 0.020], facecolor=sl_bg)
-    ax_bt = fig.add_axes([0.83, 0.070, 0.09, 0.040])
+    bg = '#ece9e2'
 
-    sl_N  = Slider(ax_sN, 'N  (flows)',     1,   200, valinit=5,   valstep=1)
-    sl_S  = Slider(ax_sS, 'S  (KB)',        10, 5000, valinit=500, valstep=10)
-    sl_CW = Slider(ax_sC, 'cwnd₀  (pkts)', 1,   200, valinit=10,  valstep=1)
-    sl_B  = Slider(ax_sB, 'B  (buf pkts)', 100, 2000, valinit=500, valstep=50)
+    # 6 sliders in 2 rows of 3
+    sl_def = [
+        # label               vmin  vmax   vinit  vstep  [left, bot, w, h]
+        ('N  (flows)',         1,    200,   5,     1,     [0.05, 0.170, 0.23, 0.018]),
+        ('S  (KB)',            10,   5000,  500,   10,    [0.34, 0.170, 0.23, 0.018]),
+        ('cwnd₀  (pkts)',      1,    200,   10,    1,     [0.63, 0.170, 0.23, 0.018]),
+        ('B  (buf pkts)',      100,  5000,  500,   50,    [0.05, 0.143, 0.23, 0.018]),
+        ('J  jitter (µs)',     0,    500,   0,     5,     [0.34, 0.143, 0.23, 0.018]),
+        ('QPS',                10,   50000, 1000,  10,    [0.63, 0.143, 0.23, 0.018]),
+    ]
+    sliders = []
+    for lbl, mn, mx, vi, vs, rect in sl_def:
+        axs = fig.add_axes(rect, facecolor=bg)
+        sl  = Slider(axs, lbl, mn, mx, valinit=vi, valstep=vs)
+        sl.label.set_fontsize(8); sl.valtext.set_fontsize(8)
+        sliders.append(sl)
+    sN, sS, sCW, sB, sJ, sQPS = sliders
 
-    for sl in (sl_N, sl_S, sl_CW, sl_B):
-        sl.label.set_fontsize(8.5)
-        sl.valtext.set_fontsize(8.5)
+    ax_btn = fig.add_axes([0.89, 0.149, 0.065, 0.032])
+    btn = Button(ax_btn, 'Reset', color=bg, hovercolor='#d5d0c8')
+    btn.label.set_fontsize(8)
 
-    btn = Button(ax_bt, 'Reset', color=sl_bg, hovercolor='#d5d0c8')
-    btn.label.set_fontsize(8.5)
-
-    axs = (ax_Q, ax_CW, ax_RTT, ax_A, ax_SQ)
+    plot_axs = (aQ, aCW, aRT, aA, aSQ)
 
     def refresh(val=None):
-        d = simulate(int(sl_N.val), float(sl_S.val),
-                     int(sl_CW.val), float(sl_B.val))
-        draw_all(d, axs, ax_inf, ax_tab)
+        d = simulate(
+            int(sN.val), float(sS.val), int(sCW.val),
+            float(sB.val), float(sJ.val), float(sQPS.val)
+        )
+        draw_plots(plot_axs, d)
+        draw_info(aInf, d)
+        draw_dims_tree(aDT, d)
         fig.canvas.draw_idle()
 
-    def reset(event):
-        for sl in (sl_N, sl_S, sl_CW, sl_B):
-            sl.reset()
+    def reset(ev):
+        for sl in sliders: sl.reset()
 
-    for sl in (sl_N, sl_S, sl_CW, sl_B):
-        sl.on_changed(refresh)
+    for sl in sliders: sl.on_changed(refresh)
     btn.on_clicked(reset)
 
     eq = (
-        r"$Q_{k+1}=\max(0, N \cdot cwnd_k - BDP)$  "
-        r"$F_k=\max(0, Q_{k+1}-K)/(N \cdot cwnd_k)$  "
-        r"$\alpha_{k+1}=(1-g)\alpha_k+gF_k$  "
-        r"loss if $Q_{k+1}>B$  "
-        r"$BCT_{ideal}=N \cdot S/C+RTT_{prop}$  "
-        r"short-flow qdelay$= Q_k/C$  "
-        r"ideal qdelay$= K/C$"
+        r'$Q_{k+1}=\max(0,\,inj_k - BDP)$   '
+        r'$inj_k = N_{old}\!\cdot\!cwnd_k + N_{new}\!\cdot\!cwnd_{init}$   '
+        r'$F_k=\max(0,\,Q_{k+1}-K)/inj_k$   '
+        r'$\alpha_{k+1}=(1-g)\alpha_k+gF_k$   '
+        r'$IAT=10^6/QPS\;\mu s$   '
+        r'$Q_0=\max(0,Q_e-C\!\cdot\!IAT)$   '
+        r'$\alpha_0=\alpha_e(1-g)^{IAT/RTT}$   '
+        r'$cw_0=\min(cwnd_{init},\,cw_e+IAT/RTT)$'
     )
-    fig.text(0.02, 0.008, eq, fontsize=7, color='#999',
-             va='bottom', ha='left', style='italic')
+    fig.text(0.02, 0.004, eq, fontsize=6.5, color='#aaa', va='bottom', style='italic')
 
     refresh()
     plt.show()
